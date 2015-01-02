@@ -16,28 +16,29 @@
 
 package com.squareup.okhttp.internal.spdy;
 
+import com.squareup.okhttp.Protocol;
+import com.squareup.okhttp.internal.Platform;
 import com.squareup.okhttp.internal.SslContextBuilder;
+import com.squareup.okhttp.internal.Util;
 import java.io.File;
-import java.io.FileInputStream;
 import java.io.IOException;
-import java.io.InputStream;
-import java.io.OutputStream;
-import java.io.OutputStreamWriter;
-import java.io.Writer;
-import java.net.InetAddress;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.Arrays;
 import java.util.List;
-import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLSocket;
 import javax.net.ssl.SSLSocketFactory;
-import org.eclipse.jetty.npn.NextProtoNego;
+import okio.BufferedSink;
+import okio.Okio;
+import okio.Source;
 
-/** A basic SPDY server that serves the contents of a local directory. */
+/** A basic SPDY/HTTP_2 server that serves the contents of a local directory. */
 public final class SpdyServer implements IncomingStreamHandler {
+  private final List<Protocol> spdyProtocols = Util.immutableList(Protocol.HTTP_2, Protocol.SPDY_3);
+
   private final File baseDirectory;
   private SSLSocketFactory sslSocketFactory;
+  private Protocol protocol;
 
   public SpdyServer(File baseDirectory) {
     this.baseDirectory = baseDirectory;
@@ -56,7 +57,7 @@ public final class SpdyServer implements IncomingStreamHandler {
       if (sslSocketFactory != null) {
         socket = doSsl(socket);
       }
-      new SpdyConnection.Builder(false, socket).handler(this).build();
+      new SpdyConnection.Builder(false, socket).protocol(protocol).handler(this).build();
     }
   }
 
@@ -65,27 +66,22 @@ public final class SpdyServer implements IncomingStreamHandler {
         (SSLSocket) sslSocketFactory.createSocket(socket, socket.getInetAddress().getHostAddress(),
             socket.getPort(), true);
     sslSocket.setUseClientMode(false);
-    NextProtoNego.put(sslSocket, new NextProtoNego.ServerProvider() {
-      @Override public void unsupported() {
-        System.out.println("UNSUPPORTED");
-      }
-      @Override public List<String> protocols() {
-        return Arrays.asList("spdy/3");
-      }
-      @Override public void protocolSelected(String protocol) {
-        System.out.println("PROTOCOL SELECTED: " + protocol);
-      }
-    });
+    Platform.get().configureTlsExtensions(sslSocket, null, spdyProtocols);
+    sslSocket.startHandshake();
+    String protocolString = Platform.get().getSelectedProtocol(sslSocket);
+    protocol = protocolString != null ? Protocol.get(protocolString) : null;
+    if (protocol == null || !spdyProtocols.contains(protocol)) {
+      throw new IllegalStateException("Protocol " + protocol + " unsupported");
+    }
     return sslSocket;
   }
 
   @Override public void receive(final SpdyStream stream) throws IOException {
-    List<String> requestHeaders = stream.getRequestHeaders();
+    List<Header> requestHeaders = stream.getRequestHeaders();
     String path = null;
-    for (int i = 0; i < requestHeaders.size(); i += 2) {
-      String s = requestHeaders.get(i);
-      if (":path".equals(s)) {
-        path = requestHeaders.get(i + 1);
+    for (int i = 0, size = requestHeaders.size(); i < size; i++) {
+      if (requestHeaders.get(i).name.equals(Header.TARGET_PATH)) {
+        path = requestHeaders.get(i).value.utf8();
         break;
       }
     }
@@ -107,40 +103,46 @@ public final class SpdyServer implements IncomingStreamHandler {
   }
 
   private void send404(SpdyStream stream, String path) throws IOException {
-    List<String> responseHeaders =
-        Arrays.asList(":status", "404", ":version", "HTTP/1.1", "content-type", "text/plain");
+    List<Header> responseHeaders = Arrays.asList(
+        new Header(":status", "404"),
+        new Header(":version", "HTTP/1.1"),
+        new Header("content-type", "text/plain")
+    );
     stream.reply(responseHeaders, true);
-    OutputStream out = stream.getOutputStream();
-    String text = "Not found: " + path;
-    out.write(text.getBytes("UTF-8"));
+    BufferedSink out = Okio.buffer(stream.getSink());
+    out.writeUtf8("Not found: " + path);
     out.close();
   }
 
   private void serveDirectory(SpdyStream stream, String[] files) throws IOException {
-    List<String> responseHeaders =
-        Arrays.asList(":status", "200", ":version", "HTTP/1.1", "content-type",
-            "text/html; charset=UTF-8");
+    List<Header> responseHeaders = Arrays.asList(
+        new Header(":status", "200"),
+        new Header(":version", "HTTP/1.1"),
+        new Header("content-type", "text/html; charset=UTF-8")
+    );
     stream.reply(responseHeaders, true);
-    OutputStream out = stream.getOutputStream();
-    Writer writer = new OutputStreamWriter(out, "UTF-8");
+    BufferedSink out = Okio.buffer(stream.getSink());
     for (String file : files) {
-      writer.write("<a href='" + file + "'>" + file + "</a><br>");
+      out.writeUtf8("<a href='" + file + "'>" + file + "</a><br>");
     }
-    writer.close();
+    out.close();
   }
 
   private void serveFile(SpdyStream stream, File file) throws IOException {
-    InputStream in = new FileInputStream(file);
-    byte[] buffer = new byte[8192];
-    stream.reply(
-        Arrays.asList(":status", "200", ":version", "HTTP/1.1", "content-type", contentType(file)),
-        true);
-    OutputStream out = stream.getOutputStream();
-    int count;
-    while ((count = in.read(buffer)) != -1) {
-      out.write(buffer, 0, count);
+    List<Header> responseHeaders = Arrays.asList(
+        new Header(":status", "200"),
+        new Header(":version", "HTTP/1.1"),
+        new Header("content-type", contentType(file))
+    );
+    stream.reply(responseHeaders, true);
+    Source source = Okio.source(file);
+    try {
+      BufferedSink out = Okio.buffer(stream.getSink());
+      out.writeAll(source);
+      out.close();
+    } finally {
+      Util.closeQuietly(source);
     }
-    out.close();
   }
 
   private String contentType(File file) {
@@ -154,8 +156,7 @@ public final class SpdyServer implements IncomingStreamHandler {
     }
 
     SpdyServer server = new SpdyServer(new File(args[0]));
-    SSLContext sslContext = new SslContextBuilder(InetAddress.getLocalHost().getHostName()).build();
-    server.useHttps(sslContext.getSocketFactory());
+    server.useHttps(SslContextBuilder.localhost().getSocketFactory());
     server.run();
   }
 }
