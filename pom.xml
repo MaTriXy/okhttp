@@ -23,6 +23,7 @@
     <module>okhttp-apache</module>
     <module>okhttp-tests</module>
     <module>okhttp-urlconnection</module>
+    <module>okhttp-android-support</module>
     <module>okcurl</module>
     <module>mockwebserver</module>
     <module>samples</module>
@@ -79,16 +80,6 @@
         <groupId>junit</groupId>
         <artifactId>junit</artifactId>
         <version>${junit.version}</version>
-      </dependency>
-       <dependency>
-        <groupId>org.mortbay.jetty.alpn</groupId>
-        <artifactId>alpn-jdk7-boot</artifactId>
-        <version>${alpn.jdk7.version}</version>
-      </dependency>
-      <dependency>
-        <groupId>org.mortbay.jetty.alpn</groupId>
-        <artifactId>alpn-jdk8-boot</artifactId>
-        <version>${alpn.jdk8.version}</version>
       </dependency>
       <dependency>
         <groupId>org.bouncycastle</groupId>

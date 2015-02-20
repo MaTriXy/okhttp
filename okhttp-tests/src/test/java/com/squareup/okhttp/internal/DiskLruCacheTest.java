@@ -72,7 +72,9 @@ public final class DiskLruCacheTest {
 
   private void createNewCacheWithSize(int maxSize) throws IOException {
     cache = new DiskLruCache(cacheDir, appVersion, 2, maxSize, executor);
-    cache.initialize();
+    synchronized (cache) {
+      cache.initialize();
+    }
     toClose.add(cache);
   }
 
@@ -156,58 +158,50 @@ public final class DiskLruCacheTest {
 
   @Test public void writeAndReadEntry() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
-    creator.set(0, "ABC");
-    creator.set(1, "DE");
-    assertNull(creator.getString(0));
+    setString(creator, 0, "ABC");
+    setString(creator, 1, "DE");
     assertNull(creator.newSource(0));
-    assertNull(creator.getString(1));
     assertNull(creator.newSource(1));
     creator.commit();
 
     DiskLruCache.Snapshot snapshot = cache.get("k1");
-    assertEquals("ABC", snapshot.getString(0));
-    assertEquals(3, snapshot.getLength(0));
-    assertEquals("DE", snapshot.getString(1));
-    assertEquals(2, snapshot.getLength(1));
+    assertSnapshotValue(snapshot, 0, "ABC");
+    assertSnapshotValue(snapshot, 1, "DE");
   }
 
   @Test public void readAndWriteEntryAcrossCacheOpenAndClose() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
-    creator.set(0, "A");
-    creator.set(1, "B");
+    setString(creator, 0, "A");
+    setString(creator, 1, "B");
     creator.commit();
     cache.close();
 
     createNewCache();
     DiskLruCache.Snapshot snapshot = cache.get("k1");
-    assertEquals("A", snapshot.getString(0));
-    assertEquals(1, snapshot.getLength(0));
-    assertEquals("B", snapshot.getString(1));
-    assertEquals(1, snapshot.getLength(1));
+    assertSnapshotValue(snapshot, 0, "A");
+    assertSnapshotValue(snapshot, 1, "B");
     snapshot.close();
   }
 
   @Test public void readAndWriteEntryWithoutProperClose() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
-    creator.set(0, "A");
-    creator.set(1, "B");
+    setString(creator, 0, "A");
+    setString(creator, 1, "B");
     creator.commit();
 
     // Simulate a dirty close of 'cache' by opening the cache directory again.
     createNewCache();
     DiskLruCache.Snapshot snapshot = cache.get("k1");
-    assertEquals("A", snapshot.getString(0));
-    assertEquals(1, snapshot.getLength(0));
-    assertEquals("B", snapshot.getString(1));
-    assertEquals(1, snapshot.getLength(1));
+    assertSnapshotValue(snapshot, 0, "A");
+    assertSnapshotValue(snapshot, 1, "B");
     snapshot.close();
   }
 
   @Test public void journalWithEditAndPublish() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
     assertJournalEquals("DIRTY k1"); // DIRTY must always be flushed.
-    creator.set(0, "AB");
-    creator.set(1, "C");
+    setString(creator, 0, "AB");
+    setString(creator, 1, "C");
     creator.commit();
     cache.close();
     assertJournalEquals("DIRTY k1", "CLEAN k1 2 1");
@@ -216,8 +210,8 @@ public final class DiskLruCacheTest {
   @Test public void revertedNewFileIsRemoveInJournal() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
     assertJournalEquals("DIRTY k1"); // DIRTY must always be flushed.
-    creator.set(0, "AB");
-    creator.set(1, "C");
+    setString(creator, 0, "AB");
+    setString(creator, 1, "C");
     creator.abort();
     cache.close();
     assertJournalEquals("DIRTY k1", "REMOVE k1");
@@ -232,8 +226,8 @@ public final class DiskLruCacheTest {
   @Test public void journalDoesNotIncludeReadOfYetUnpublishedValue() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
     assertNull(cache.get("k1"));
-    creator.set(0, "A");
-    creator.set(1, "BC");
+    setString(creator, 0, "A");
+    setString(creator, 1, "BC");
     creator.commit();
     cache.close();
     assertJournalEquals("DIRTY k1", "CLEAN k1 1 2");
@@ -241,12 +235,12 @@ public final class DiskLruCacheTest {
 
   @Test public void journalWithEditAndPublishAndRead() throws Exception {
     DiskLruCache.Editor k1Creator = cache.edit("k1");
-    k1Creator.set(0, "AB");
-    k1Creator.set(1, "C");
+    setString(k1Creator, 0, "AB");
+    setString(k1Creator, 1, "C");
     k1Creator.commit();
     DiskLruCache.Editor k2Creator = cache.edit("k2");
-    k2Creator.set(0, "DEF");
-    k2Creator.set(1, "G");
+    setString(k2Creator, 0, "DEF");
+    setString(k2Creator, 1, "G");
     k2Creator.commit();
     DiskLruCache.Snapshot k1Snapshot = cache.get("k1");
     k1Snapshot.close();
@@ -256,24 +250,24 @@ public final class DiskLruCacheTest {
 
   @Test public void cannotOperateOnEditAfterPublish() throws Exception {
     DiskLruCache.Editor editor = cache.edit("k1");
-    editor.set(0, "A");
-    editor.set(1, "B");
+    setString(editor, 0, "A");
+    setString(editor, 1, "B");
     editor.commit();
     assertInoperable(editor);
   }
 
   @Test public void cannotOperateOnEditAfterRevert() throws Exception {
     DiskLruCache.Editor editor = cache.edit("k1");
-    editor.set(0, "A");
-    editor.set(1, "B");
+    setString(editor, 0, "A");
+    setString(editor, 1, "B");
     editor.abort();
     assertInoperable(editor);
   }
 
   @Test public void explicitRemoveAppliedToDiskImmediately() throws Exception {
     DiskLruCache.Editor editor = cache.edit("k1");
-    editor.set(0, "ABC");
-    editor.set(1, "B");
+    setString(editor, 0, "ABC");
+    setString(editor, 1, "B");
     editor.commit();
     File k1 = getCleanFile("k1", 0);
     assertEquals("ABC", readFile(k1));
@@ -284,9 +278,9 @@ public final class DiskLruCacheTest {
   @Test public void removePreventsActiveEditFromStoringAValue() throws Exception {
     set("a", "a", "a");
     DiskLruCache.Editor a = cache.edit("a");
-    a.set(0, "a1");
+    setString(a, 0, "a1");
     assertTrue(cache.remove("a"));
-    a.set(1, "a2");
+    setString(a, 1, "a2");
     a.commit();
     assertAbsent("a");
   }
@@ -297,8 +291,8 @@ public final class DiskLruCacheTest {
    */
   @Test public void readAndWriteOverlapsMaintainConsistency() throws Exception {
     DiskLruCache.Editor v1Creator = cache.edit("k1");
-    v1Creator.set(0, "AAaa");
-    v1Creator.set(1, "BBbb");
+    setString(v1Creator, 0, "AAaa");
+    setString(v1Creator, 1, "BBbb");
     v1Creator.commit();
 
     DiskLruCache.Snapshot snapshot1 = cache.get("k1");
@@ -307,21 +301,18 @@ public final class DiskLruCacheTest {
     assertEquals('A', inV1.readByte());
 
     DiskLruCache.Editor v1Updater = cache.edit("k1");
-    v1Updater.set(0, "CCcc");
-    v1Updater.set(1, "DDdd");
+    setString(v1Updater, 0, "CCcc");
+    setString(v1Updater, 1, "DDdd");
     v1Updater.commit();
 
     DiskLruCache.Snapshot snapshot2 = cache.get("k1");
-    assertEquals("CCcc", snapshot2.getString(0));
-    assertEquals(4, snapshot2.getLength(0));
-    assertEquals("DDdd", snapshot2.getString(1));
-    assertEquals(4, snapshot2.getLength(1));
+    assertSnapshotValue(snapshot2, 0, "CCcc");
+    assertSnapshotValue(snapshot2, 1, "DDdd");
     snapshot2.close();
 
     assertEquals('a', inV1.readByte());
     assertEquals('a', inV1.readByte());
-    assertEquals("BBbb", snapshot1.getString(1));
-    assertEquals(4, snapshot1.getLength(1));
+    assertSnapshotValue(snapshot1, 1, "BBbb");
     snapshot1.close();
   }
 
@@ -455,7 +446,7 @@ public final class DiskLruCacheTest {
 
   @Test public void createNewEntryWithTooFewValuesFails() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
-    creator.set(1, "A");
+    setString(creator, 1, "A");
     try {
       creator.commit();
       fail();
@@ -469,14 +460,14 @@ public final class DiskLruCacheTest {
     assertNull(cache.get("k1"));
 
     DiskLruCache.Editor creator2 = cache.edit("k1");
-    creator2.set(0, "B");
-    creator2.set(1, "C");
+    setString(creator2, 0, "B");
+    setString(creator2, 1, "C");
     creator2.commit();
   }
 
   @Test public void revertWithTooFewValues() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
-    creator.set(1, "A");
+    setString(creator, 1, "A");
     creator.abort();
     assertFalse(getCleanFile("k1", 0).exists());
     assertFalse(getCleanFile("k1", 1).exists());
@@ -487,19 +478,17 @@ public final class DiskLruCacheTest {
 
   @Test public void updateExistingEntryWithTooFewValuesReusesPreviousValues() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
-    creator.set(0, "A");
-    creator.set(1, "B");
+    setString(creator, 0, "A");
+    setString(creator, 1, "B");
     creator.commit();
 
     DiskLruCache.Editor updater = cache.edit("k1");
-    updater.set(0, "C");
+    setString(updater, 0, "C");
     updater.commit();
 
     DiskLruCache.Snapshot snapshot = cache.get("k1");
-    assertEquals("C", snapshot.getString(0));
-    assertEquals(1, snapshot.getLength(0));
-    assertEquals("B", snapshot.getString(1));
-    assertEquals(1, snapshot.getLength(1));
+    assertSnapshotValue(snapshot, 0, "C");
+    assertSnapshotValue(snapshot, 1, "B");
     snapshot.close();
   }
 
@@ -643,7 +632,7 @@ public final class DiskLruCacheTest {
 
   @Test public void constructorDoesNotAllowZeroCacheSize() throws Exception {
     try {
-      DiskLruCache.open(cacheDir, appVersion, 2, 0);
+      DiskLruCache.create(cacheDir, appVersion, 2, 0);
       fail();
     } catch (IllegalArgumentException expected) {
     }
@@ -651,7 +640,7 @@ public final class DiskLruCacheTest {
 
   @Test public void constructorDoesNotAllowZeroValuesPerEntry() throws Exception {
     try {
-      DiskLruCache.open(cacheDir, appVersion, 0, 10);
+      DiskLruCache.create(cacheDir, appVersion, 0, 10);
       fail();
     } catch (IllegalArgumentException expected) {
     }
@@ -713,8 +702,8 @@ public final class DiskLruCacheTest {
 
   @Test public void restoreBackupFile() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
-    creator.set(0, "ABC");
-    creator.set(1, "DE");
+    setString(creator, 0, "ABC");
+    setString(creator, 1, "DE");
     creator.commit();
     cache.close();
 
@@ -724,10 +713,8 @@ public final class DiskLruCacheTest {
     createNewCache();
 
     DiskLruCache.Snapshot snapshot = cache.get("k1");
-    assertEquals("ABC", snapshot.getString(0));
-    assertEquals(3, snapshot.getLength(0));
-    assertEquals("DE", snapshot.getString(1));
-    assertEquals(2, snapshot.getLength(1));
+    assertSnapshotValue(snapshot, 0, "ABC");
+    assertSnapshotValue(snapshot, 1, "DE");
 
     assertFalse(journalBkpFile.exists());
     assertTrue(journalFile.exists());
@@ -735,16 +722,16 @@ public final class DiskLruCacheTest {
 
   @Test public void journalFileIsPreferredOverBackupFile() throws Exception {
     DiskLruCache.Editor creator = cache.edit("k1");
-    creator.set(0, "ABC");
-    creator.set(1, "DE");
+    setString(creator, 0, "ABC");
+    setString(creator, 1, "DE");
     creator.commit();
     cache.flush();
 
     copyFile(journalFile, journalBkpFile);
 
     creator = cache.edit("k2");
-    creator.set(0, "F");
-    creator.set(1, "GH");
+    setString(creator, 0, "F");
+    setString(creator, 1, "GH");
     creator.commit();
     cache.close();
 
@@ -754,16 +741,12 @@ public final class DiskLruCacheTest {
     createNewCache();
 
     DiskLruCache.Snapshot snapshotA = cache.get("k1");
-    assertEquals("ABC", snapshotA.getString(0));
-    assertEquals(3, snapshotA.getLength(0));
-    assertEquals("DE", snapshotA.getString(1));
-    assertEquals(2, snapshotA.getLength(1));
+    assertSnapshotValue(snapshotA, 0, "ABC");
+    assertSnapshotValue(snapshotA, 1, "DE");
 
     DiskLruCache.Snapshot snapshotB = cache.get("k2");
-    assertEquals("F", snapshotB.getString(0));
-    assertEquals(1, snapshotB.getLength(0));
-    assertEquals("GH", snapshotB.getString(1));
-    assertEquals(2, snapshotB.getLength(1));
+    assertSnapshotValue(snapshotB, 0, "F");
+    assertSnapshotValue(snapshotB, 1, "GH");
 
     assertFalse(journalBkpFile.exists());
     assertTrue(journalFile.exists());
@@ -772,7 +755,7 @@ public final class DiskLruCacheTest {
   @Test public void openCreatesDirectoryIfNecessary() throws Exception {
     cache.close();
     File dir = tempDir.newFolder("testOpenCreatesDirectoryIfNecessary");
-    cache = DiskLruCache.open(dir, appVersion, 2, Integer.MAX_VALUE);
+    cache = DiskLruCache.create(dir, appVersion, 2, Integer.MAX_VALUE);
     set("a", "a", "a");
     assertTrue(new File(dir, "a.0").exists());
     assertTrue(new File(dir, "a.1").exists());
@@ -789,7 +772,7 @@ public final class DiskLruCacheTest {
     set("a", "a", "a");
     DiskLruCache.Snapshot snapshot = cache.get("a");
     DiskLruCache.Editor editor = snapshot.edit();
-    editor.set(1, "a2");
+    setString(editor, 1, "a2");
     editor.commit();
     assertValue("a", "a", "a2");
   }
@@ -798,10 +781,10 @@ public final class DiskLruCacheTest {
     set("a", "a", "a");
     DiskLruCache.Snapshot snapshot = cache.get("a");
     DiskLruCache.Editor toAbort = snapshot.edit();
-    toAbort.set(0, "b");
+    setString(toAbort, 0, "b");
     toAbort.abort();
     DiskLruCache.Editor editor = snapshot.edit();
-    editor.set(1, "a2");
+    setString(editor, 1, "a2");
     editor.commit();
     assertValue("a", "a", "a2");
   }
@@ -810,7 +793,7 @@ public final class DiskLruCacheTest {
     set("a", "a", "a");
     DiskLruCache.Snapshot snapshot = cache.get("a");
     DiskLruCache.Editor toAbort = snapshot.edit();
-    toAbort.set(0, "b");
+    setString(toAbort, 0, "b");
     toAbort.commit();
     assertNull(snapshot.edit());
   }
@@ -850,7 +833,7 @@ public final class DiskLruCacheTest {
     set("a", "a", "a");
     DiskLruCache.Editor a = cache.get("a").edit();
     tempDir.delete();
-    a.set(1, "a2");
+    setString(a, 1, "a2");
     a.commit();
   }
 
@@ -865,9 +848,9 @@ public final class DiskLruCacheTest {
     set("a", "a", "a");
     set("b", "b", "b");
     DiskLruCache.Editor a = cache.get("a").edit();
-    a.set(0, "a1");
+    setString(a, 0, "a1");
     tempDir.delete();
-    a.set(1, "a2");
+    setString(a, 1, "a2");
     a.commit();
     assertNull(cache.get("a"));
   }
@@ -886,7 +869,7 @@ public final class DiskLruCacheTest {
   @Test public void trimToSizeWithActiveEdit() throws Exception {
     set("a", "a1234", "a1234");
     DiskLruCache.Editor a = cache.edit("a");
-    a.set(0, "a123");
+    setString(a, 0, "a123");
 
     cache.setMaxSize(8); // Smaller than the sum of active edits!
     cache.flush(); // Force trimToSize().
@@ -894,7 +877,7 @@ public final class DiskLruCacheTest {
     assertNull(cache.get("a"));
 
     // After the edit is completed, its entry is still gone.
-    a.set(1, "a1");
+    setString(a, 1, "a1");
     a.commit();
     assertAbsent("a");
     assertEquals(0, cache.size());
@@ -911,8 +894,8 @@ public final class DiskLruCacheTest {
 
   @Test public void evictAllWithPartialCreate() throws Exception {
     DiskLruCache.Editor a = cache.edit("a");
-    a.set(0, "a1");
-    a.set(1, "a2");
+    setString(a, 0, "a1");
+    setString(a, 1, "a2");
     cache.evictAll();
     assertEquals(0, cache.size());
     a.commit();
@@ -922,8 +905,8 @@ public final class DiskLruCacheTest {
   @Test public void evictAllWithPartialEditDoesNotStoreAValue() throws Exception {
     set("a", "a", "a");
     DiskLruCache.Editor a = cache.edit("a");
-    a.set(0, "a1");
-    a.set(1, "a2");
+    setString(a, 0, "a1");
+    setString(a, 1, "a2");
     cache.evictAll();
     assertEquals(0, cache.size());
     a.commit();
@@ -933,11 +916,11 @@ public final class DiskLruCacheTest {
   @Test public void evictAllDoesntInterruptPartialRead() throws Exception {
     set("a", "a", "a");
     DiskLruCache.Snapshot a = cache.get("a");
-    assertEquals("a", a.getString(0));
+    assertSnapshotValue(a, 0, "a");
     cache.evictAll();
     assertEquals(0, cache.size());
     assertAbsent("a");
-    assertEquals("a", a.getString(1));
+    assertSnapshotValue(a, 1, "a");
     a.close();
   }
 
@@ -960,22 +943,22 @@ public final class DiskLruCacheTest {
     assertTrue(iterator.hasNext());
     DiskLruCache.Snapshot a = iterator.next();
     assertEquals("a", a.key());
-    assertEquals("a1", a.getString(0));
-    assertEquals("a2", a.getString(1));
+    assertSnapshotValue(a, 0, "a1");
+    assertSnapshotValue(a, 1, "a2");
     a.close();
 
     assertTrue(iterator.hasNext());
     DiskLruCache.Snapshot b = iterator.next();
     assertEquals("b", b.key());
-    assertEquals("b1", b.getString(0));
-    assertEquals("b2", b.getString(1));
+    assertSnapshotValue(b, 0, "b1");
+    assertSnapshotValue(b, 1, "b2");
     b.close();
 
     assertTrue(iterator.hasNext());
     DiskLruCache.Snapshot c = iterator.next();
     assertEquals("c", c.key());
-    assertEquals("c1", c.getString(0));
-    assertEquals("c2", c.getString(1));
+    assertSnapshotValue(c, 0, "c1");
+    assertSnapshotValue(c, 1, "c2");
     c.close();
 
     assertFalse(iterator.hasNext());
@@ -1017,8 +1000,8 @@ public final class DiskLruCacheTest {
 
     DiskLruCache.Snapshot b = iterator.next();
     assertEquals("b", b.key());
-    assertEquals("b3", b.getString(0));
-    assertEquals("b4", b.getString(1));
+    assertSnapshotValue(b, 0, "b3");
+    assertSnapshotValue(b, 1, "b4");
     b.close();
   }
 
@@ -1077,6 +1060,16 @@ public final class DiskLruCacheTest {
     Iterator<DiskLruCache.Snapshot> iterator = cache.snapshots();
     cache.close();
     assertFalse(iterator.hasNext());
+  }
+
+  @Test public void isClosed_uninitializedCache() throws Exception {
+    // Create an uninitialized cache.
+    cache = new DiskLruCache(cacheDir, appVersion, 2, Integer.MAX_VALUE, executor);
+    toClose.add(cache);
+
+    assertFalse(cache.isClosed());
+    cache.close();
+    assertTrue(cache.isClosed());
   }
 
   private void assertJournalEquals(String... expectedBodyLines) throws Exception {
@@ -1148,12 +1141,7 @@ public final class DiskLruCacheTest {
 
   private static void assertInoperable(DiskLruCache.Editor editor) throws Exception {
     try {
-      editor.getString(0);
-      fail();
-    } catch (IllegalStateException expected) {
-    }
-    try {
-      editor.set(0, "A");
+      setString(editor, 0, "A");
       fail();
     } catch (IllegalStateException expected) {
     }
@@ -1204,9 +1192,15 @@ public final class DiskLruCacheTest {
 
   private void set(String key, String value0, String value1) throws Exception {
     DiskLruCache.Editor editor = cache.edit(key);
-    editor.set(0, value0);
-    editor.set(1, value1);
+    setString(editor, 0, value0);
+    setString(editor, 1, value1);
     editor.commit();
+  }
+
+  public static void setString(DiskLruCache.Editor editor, int index, String value) throws IOException {
+    BufferedSink writer = Okio.buffer(editor.newSink(index));
+    writer.writeUtf8(value);
+    writer.close();
   }
 
   private void assertAbsent(String key) throws Exception {
@@ -1223,13 +1217,21 @@ public final class DiskLruCacheTest {
 
   private void assertValue(String key, String value0, String value1) throws Exception {
     DiskLruCache.Snapshot snapshot = cache.get(key);
-    assertEquals(value0, snapshot.getString(0));
-    assertEquals(value0.length(), snapshot.getLength(0));
-    assertEquals(value1, snapshot.getString(1));
-    assertEquals(value1.length(), snapshot.getLength(1));
+    assertSnapshotValue(snapshot, 0, value0);
+    assertSnapshotValue(snapshot, 1, value1);
     assertTrue(getCleanFile(key, 0).exists());
     assertTrue(getCleanFile(key, 1).exists());
     snapshot.close();
+  }
+
+  private void assertSnapshotValue(DiskLruCache.Snapshot snapshot, int index, String value)
+      throws IOException {
+    assertEquals(value, sourceAsString(snapshot.getSource(index)));
+    assertEquals(value.length(), snapshot.getLength(index));
+  }
+
+  private String sourceAsString(Source source) throws IOException {
+    return source != null ? Okio.buffer(source).readUtf8() : null;
   }
 
   private void copyFile(File from, File to) throws IOException {

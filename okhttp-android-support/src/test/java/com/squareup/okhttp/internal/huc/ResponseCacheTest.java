@@ -17,6 +17,7 @@
 package com.squareup.okhttp.internal.huc;
 
 import com.squareup.okhttp.AbstractResponseCache;
+import com.squareup.okhttp.Headers;
 import com.squareup.okhttp.OkHttpClient;
 import com.squareup.okhttp.OkUrlFactory;
 import com.squareup.okhttp.internal.Internal;
@@ -51,7 +52,6 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Date;
 import java.util.HashMap;
-import java.util.Iterator;
 import java.util.List;
 import java.util.Map;
 import java.util.concurrent.TimeUnit;
@@ -158,6 +158,31 @@ public final class ResponseCacheTest {
 
     assertEquals(-1, in.read());
     in.close();
+  }
+
+  @Test public void responseCachingWithoutBody() throws IOException {
+    MockResponse response =
+        new MockResponse().addHeader("Last-Modified: " + formatDate(-1, TimeUnit.HOURS))
+            .addHeader("Expires: " + formatDate(1, TimeUnit.HOURS))
+            .setStatus("HTTP/1.1 200 Fantastic");
+    server.enqueue(response);
+
+    // Make sure that calling skip() doesn't omit bytes from the cache.
+    HttpURLConnection urlConnection = openConnection(server.getUrl("/"));
+    assertEquals(200, urlConnection.getResponseCode());
+    assertEquals("Fantastic", urlConnection.getResponseMessage());
+    assertTrue(urlConnection.getDoInput());
+    InputStream is = urlConnection.getInputStream();
+    assertEquals(-1, is.read());
+    is.close();
+
+    urlConnection = openConnection(server.getUrl("/")); // cached!
+    assertTrue(urlConnection.getDoInput());
+    InputStream cachedIs = urlConnection.getInputStream();
+    assertEquals(-1, cachedIs.read());
+    cachedIs.close();
+    assertEquals(200, urlConnection.getResponseCode());
+    assertEquals("Fantastic", urlConnection.getResponseMessage());
   }
 
   @Test public void secureResponseCaching() throws IOException {
@@ -421,8 +446,7 @@ public final class ResponseCacheTest {
     RecordedRequest conditionalRequest = assertConditionallyCached(
         new MockResponse().addHeader("Last-Modified: " + lastModifiedDate)
             .addHeader("Date: " + formatDate(-15, TimeUnit.SECONDS)));
-    List<String> headers = conditionalRequest.getHeaders();
-    assertTrue(headers.contains("If-Modified-Since: " + lastModifiedDate));
+    assertEquals(lastModifiedDate, conditionalRequest.getHeader("If-Modified-Since"));
   }
 
   @Test public void defaultExpirationDateFullyCachedForMoreThan24Hours() throws Exception {
@@ -458,8 +482,7 @@ public final class ResponseCacheTest {
     RecordedRequest conditionalRequest = assertConditionallyCached(
         new MockResponse().addHeader("Last-Modified: " + lastModifiedDate)
             .addHeader("Expires: " + formatDate(-1, TimeUnit.HOURS)));
-    List<String> headers = conditionalRequest.getHeaders();
-    assertTrue(headers.contains("If-Modified-Since: " + lastModifiedDate));
+    assertEquals(lastModifiedDate, conditionalRequest.getHeader("If-Modified-Since"));
   }
 
   @Test public void expirationDateInThePastWithNoLastModifiedHeader() throws Exception {
@@ -482,8 +505,7 @@ public final class ResponseCacheTest {
         new MockResponse().addHeader("Date: " + formatDate(-120, TimeUnit.SECONDS))
             .addHeader("Last-Modified: " + lastModifiedDate)
             .addHeader("Cache-Control: max-age=60"));
-    List<String> headers = conditionalRequest.getHeaders();
-    assertTrue(headers.contains("If-Modified-Since: " + lastModifiedDate));
+    assertEquals(lastModifiedDate, conditionalRequest.getHeader("If-Modified-Since"));
   }
 
   @Test public void maxAgeInThePastWithDateHeaderButNoLastModifiedHeader() throws Exception {
@@ -595,7 +617,7 @@ public final class ResponseCacheTest {
   @Test public void etag() throws Exception {
     RecordedRequest conditionalRequest =
         assertConditionallyCached(new MockResponse().addHeader("ETag: v1"));
-    assertTrue(conditionalRequest.getHeaders().contains("If-None-Match: v1"));
+    assertEquals("v1", conditionalRequest.getHeader("If-None-Match"));
   }
 
   @Test public void etagAndExpirationDateInThePast() throws Exception {
@@ -604,9 +626,8 @@ public final class ResponseCacheTest {
         new MockResponse().addHeader("ETag: v1")
             .addHeader("Last-Modified: " + lastModifiedDate)
             .addHeader("Expires: " + formatDate(-1, TimeUnit.HOURS)));
-    List<String> headers = conditionalRequest.getHeaders();
-    assertTrue(headers.contains("If-None-Match: v1"));
-    assertTrue(headers.contains("If-Modified-Since: " + lastModifiedDate));
+    assertEquals("v1", conditionalRequest.getHeader("If-None-Match"));
+    assertNull(conditionalRequest.getHeader("If-Modified-Since"));
   }
 
   @Test public void etagAndExpirationDateInTheFuture() throws Exception {
@@ -625,8 +646,7 @@ public final class ResponseCacheTest {
         new MockResponse().addHeader("Last-Modified: " + lastModifiedDate)
             .addHeader("Expires: " + formatDate(1, TimeUnit.HOURS))
             .addHeader("Cache-Control: no-cache"));
-    List<String> headers = conditionalRequest.getHeaders();
-    assertTrue(headers.contains("If-Modified-Since: " + lastModifiedDate));
+    assertEquals(lastModifiedDate, conditionalRequest.getHeader("If-Modified-Since"));
   }
 
   @Test public void pragmaNoCache() throws Exception {
@@ -639,8 +659,7 @@ public final class ResponseCacheTest {
         new MockResponse().addHeader("Last-Modified: " + lastModifiedDate)
             .addHeader("Expires: " + formatDate(1, TimeUnit.HOURS))
             .addHeader("Pragma: no-cache"));
-    List<String> headers = conditionalRequest.getHeaders();
-    assertTrue(headers.contains("If-Modified-Since: " + lastModifiedDate));
+    assertEquals(lastModifiedDate, conditionalRequest.getHeader("If-Modified-Since"));
   }
 
   @Test public void cacheControlNoStore() throws Exception {
@@ -863,9 +882,8 @@ public final class ResponseCacheTest {
     String ifModifiedSinceDate = formatDate(-24, TimeUnit.HOURS);
     RecordedRequest request =
         assertClientSuppliedCondition(response, "If-Modified-Since", ifModifiedSinceDate);
-    List<String> headers = request.getHeaders();
-    assertTrue(headers.contains("If-Modified-Since: " + ifModifiedSinceDate));
-    assertFalse(headers.contains("If-None-Match: v3"));
+    assertEquals(ifModifiedSinceDate, request.getHeader("If-Modified-Since"));
+    assertNull(request.getHeader("If-None-Match"));
   }
 
   @Test public void clientSuppliedIfNoneMatchSinceWithCachedResult() throws Exception {
@@ -874,9 +892,8 @@ public final class ResponseCacheTest {
         .addHeader("Date: " + formatDate(-2, TimeUnit.MINUTES))
         .addHeader("Cache-Control: max-age=0");
     RecordedRequest request = assertClientSuppliedCondition(response, "If-None-Match", "v1");
-    List<String> headers = request.getHeaders();
-    assertTrue(headers.contains("If-None-Match: v1"));
-    assertFalse(headers.contains("If-Modified-Since: " + lastModifiedDate));
+    assertEquals("v1", request.getHeader("If-None-Match"));
+    assertNull(request.getHeader("If-Modified-Since"));
   }
 
   private RecordedRequest assertClientSuppliedCondition(MockResponse seed, String conditionName,
@@ -905,7 +922,7 @@ public final class ResponseCacheTest {
     connection.setIfModifiedSince(since.getTime());
     assertEquals("A", readAscii(connection));
     RecordedRequest request = server.takeRequest();
-    assertTrue(request.getHeaders().contains("If-Modified-Since: " + HttpDate.format(since)));
+    assertEquals(HttpDate.format(since), request.getHeader("If-Modified-Since"));
   }
 
   @Test public void clientSuppliedConditionWithoutCachedResult() throws Exception {
@@ -1212,9 +1229,11 @@ public final class ResponseCacheTest {
   }
 
   @Test public void emptyResponseHeaderNameFromCacheIsLenient() throws Exception {
+    Headers.Builder headers = new Headers.Builder()
+        .add("Cache-Control: max-age=120");
+    Internal.instance.addLenient(headers, ": A");
     server.enqueue(new MockResponse()
-        .addHeader("Cache-Control: max-age=120")
-        .addHeader(": A")
+        .setHeaders(headers.build())
         .setBody("body"));
 
     HttpURLConnection connection = openConnection(server.getUrl("/"));
@@ -1362,12 +1381,11 @@ public final class ResponseCacheTest {
    */
   private MockResponse truncateViolently(MockResponse response, int numBytesToKeep) {
     response.setSocketPolicy(DISCONNECT_AT_END);
-    List<String> headers = new ArrayList<>(response.getHeaders());
+    Headers headers = response.getHeaders();
     Buffer truncatedBody = new Buffer();
     truncatedBody.write(response.getBody(), numBytesToKeep);
     response.setBody(truncatedBody);
-    response.getHeaders().clear();
-    response.getHeaders().addAll(headers);
+    response.setHeaders(headers);
     return response;
   }
 
@@ -1428,12 +1446,7 @@ public final class ResponseCacheTest {
       @Override void setBody(MockResponse response, Buffer content, int chunkSize) {
         response.setBody(content);
         response.setSocketPolicy(DISCONNECT_AT_END);
-        for (Iterator<String> h = response.getHeaders().iterator(); h.hasNext(); ) {
-          if (h.next().startsWith("Content-Length:")) {
-            h.remove();
-            break;
-          }
-        }
+        response.removeHeader("Content-Length");
       }
     };
 

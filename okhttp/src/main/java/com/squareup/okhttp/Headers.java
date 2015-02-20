@@ -19,10 +19,10 @@ package com.squareup.okhttp;
 
 import com.squareup.okhttp.internal.http.HttpDate;
 import java.util.ArrayList;
-import java.util.Arrays;
 import java.util.Collections;
 import java.util.Date;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.TreeSet;
 
@@ -118,7 +118,7 @@ public final class Headers {
 
   public Builder newBuilder() {
     Builder result = new Builder();
-    result.namesAndValues.addAll(Arrays.asList(namesAndValues));
+    Collections.addAll(result.namesAndValues, namesAndValues);
     return result;
   }
 
@@ -163,6 +163,34 @@ public final class Headers {
       if (name.length() == 0 || name.indexOf('\0') != -1 || value.indexOf('\0') != -1) {
         throw new IllegalArgumentException("Unexpected header: " + name + ": " + value);
       }
+    }
+
+    return new Headers(namesAndValues);
+  }
+
+  /**
+   * Returns headers for the header names and values in the {@link Map}.
+   */
+  public static Headers of(Map<String, String> headers) {
+    if (headers == null) {
+      throw new IllegalArgumentException("Expected map with header names and values");
+    }
+
+    // Make a defensive copy and clean it up.
+    String[] namesAndValues = new String[headers.size() * 2];
+    int i = 0;
+    for (Map.Entry<String, String> header : headers.entrySet()) {
+      if (header.getKey() == null || header.getValue() == null) {
+        throw new IllegalArgumentException("Headers cannot be null");
+      }
+      String name = header.getKey().trim();
+      String value = header.getValue().trim();
+      if (name.length() == 0 || name.indexOf('\0') != -1 || value.indexOf('\0') != -1) {
+        throw new IllegalArgumentException("Unexpected header: " + name + ": " + value);
+      }
+      namesAndValues[i] = name;
+      namesAndValues[i + 1] = value;
+      i += 2;
     }
 
     return new Headers(namesAndValues);

@@ -150,6 +150,10 @@ public final class DiskLruCache implements Closeable {
   private final LinkedHashMap<String, Entry> lruEntries = new LinkedHashMap<>(0, 0.75f, true);
   private int redundantOpCount;
 
+  // Must be read and written when synchronized on 'this'.
+  private boolean initialized;
+  private boolean closed;
+
   /**
    * To differentiate between old and current snapshots, each entry is given
    * a sequence number each time an edit is committed. A snapshot is stale if
@@ -162,8 +166,8 @@ public final class DiskLruCache implements Closeable {
   private final Runnable cleanupRunnable = new Runnable() {
     public void run() {
       synchronized (DiskLruCache.this) {
-        if (journalWriter == null) {
-          return; // Closed.
+        if (!initialized | closed) {
+          return; // Nothing to do
         }
         try {
           trimToSize();
@@ -191,6 +195,12 @@ public final class DiskLruCache implements Closeable {
 
   // Visible for testing.
   void initialize() throws IOException {
+    assert Thread.holdsLock(this);
+
+    if (initialized) {
+      return; // Already initialized.
+    }
+
     // If a bkp file exists, use it instead.
     if (journalFileBackup.exists()) {
       // If journal file also exists just delete backup file.
@@ -206,29 +216,31 @@ public final class DiskLruCache implements Closeable {
       try {
         readJournal();
         processJournal();
+        initialized = true;
         return;
       } catch (IOException journalIsCorrupt) {
         Platform.get().logW("DiskLruCache " + directory + " is corrupt: "
             + journalIsCorrupt.getMessage() + ", removing");
         delete();
+        closed = false;
       }
     }
 
     directory.mkdirs();
     rebuildJournal();
+
+    initialized = true;
   }
 
   /**
-   * Opens the cache in {@code directory}, creating a cache if none exists
-   * there.
+   * Create a cache which will reside in {@code directory}. This cache is lazily initialized on
+   * first access and will be created if it does not exist.
    *
    * @param directory a writable directory
    * @param valueCount the number of values per cache entry. Must be positive.
    * @param maxSize the maximum number of bytes this cache should use to store
-   * @throws IOException if reading or writing the cache directory fails
    */
-  public static DiskLruCache open(File directory, int appVersion, int valueCount, long maxSize)
-      throws IOException {
+  public static DiskLruCache create(File directory, int appVersion, int valueCount, long maxSize) {
     if (maxSize <= 0) {
       throw new IllegalArgumentException("maxSize <= 0");
     }
@@ -240,9 +252,7 @@ public final class DiskLruCache implements Closeable {
     Executor executor = new ThreadPoolExecutor(0, 1, 60L, TimeUnit.SECONDS,
         new LinkedBlockingQueue<Runnable>(), Util.threadFactory("OkHttp DiskLruCache", true));
 
-    DiskLruCache cache = new DiskLruCache(directory, appVersion, valueCount, maxSize, executor);
-    cache.initialize();
-    return cache;
+    return new DiskLruCache(directory, appVersion, valueCount, maxSize, executor);
   }
 
   private void readJournal() throws IOException {
@@ -410,6 +420,8 @@ public final class DiskLruCache implements Closeable {
    * the head of the LRU queue.
    */
   public synchronized Snapshot get(String key) throws IOException {
+    initialize();
+
     checkNotClosed();
     validateKey(key);
     Entry entry = lruEntries.get(key);
@@ -436,6 +448,8 @@ public final class DiskLruCache implements Closeable {
   }
 
   private synchronized Editor edit(String key, long expectedSequenceNumber) throws IOException {
+    initialize();
+
     checkNotClosed();
     validateKey(key);
     Entry entry = lruEntries.get(key);
@@ -478,7 +492,9 @@ public final class DiskLruCache implements Closeable {
    */
   public synchronized void setMaxSize(long maxSize) {
     this.maxSize = maxSize;
-    executor.execute(cleanupRunnable);
+    if (initialized) {
+      executor.execute(cleanupRunnable);
+    }
   }
 
   /**
@@ -486,7 +502,8 @@ public final class DiskLruCache implements Closeable {
    * this cache. This may be greater than the max size if a background
    * deletion is pending.
    */
-  public synchronized long size() {
+  public synchronized long size() throws IOException {
+    initialize();
     return size;
   }
 
@@ -568,6 +585,8 @@ public final class DiskLruCache implements Closeable {
    * @return true if an entry was removed.
    */
   public synchronized boolean remove(String key) throws IOException {
+    initialize();
+
     checkNotClosed();
     validateKey(key);
     Entry entry = lruEntries.get(key);
@@ -599,18 +618,20 @@ public final class DiskLruCache implements Closeable {
   }
 
   /** Returns true if this cache has been closed. */
-  public boolean isClosed() {
-    return journalWriter == null;
+  public synchronized boolean isClosed() {
+    return closed;
   }
 
-  private void checkNotClosed() {
-    if (journalWriter == null) {
+  private synchronized void checkNotClosed() {
+    if (isClosed()) {
       throw new IllegalStateException("cache is closed");
     }
   }
 
   /** Force buffered operations to the filesystem. */
   public synchronized void flush() throws IOException {
+    if (!initialized) return;
+
     checkNotClosed();
     trimToSize();
     journalWriter.flush();
@@ -618,8 +639,9 @@ public final class DiskLruCache implements Closeable {
 
   /** Closes this cache. Stored values will remain on the filesystem. */
   public synchronized void close() throws IOException {
-    if (journalWriter == null) {
-      return; // Already closed.
+    if (!initialized || closed) {
+      closed = true;
+      return;
     }
     // Copying for safe iteration.
     for (Entry entry : lruEntries.values().toArray(new Entry[lruEntries.size()])) {
@@ -630,6 +652,7 @@ public final class DiskLruCache implements Closeable {
     trimToSize();
     journalWriter.close();
     journalWriter = null;
+    closed = true;
   }
 
   private void trimToSize() throws IOException {
@@ -654,6 +677,7 @@ public final class DiskLruCache implements Closeable {
    * normally but their values will not be stored.
    */
   public synchronized void evictAll() throws IOException {
+    initialize();
     // Copying for safe iteration.
     for (Entry entry : lruEntries.values().toArray(new Entry[lruEntries.size()])) {
       removeEntry(entry);
@@ -665,14 +689,6 @@ public final class DiskLruCache implements Closeable {
     if (!matcher.matches()) {
       throw new IllegalArgumentException(
           "keys must match regex [a-z0-9_-]{1,120}: \"" + key + "\"");
-    }
-  }
-
-  private static String sourceToString(Source in) throws IOException {
-    try {
-      return Okio.buffer(in).readUtf8();
-    } finally {
-      Util.closeQuietly(in);
     }
   }
 
@@ -691,7 +707,8 @@ public final class DiskLruCache implements Closeable {
    *
    * <p>The returned iterator supports {@link Iterator#remove}.
    */
-  public synchronized Iterator<Snapshot> snapshots() {
+  public synchronized Iterator<Snapshot> snapshots() throws IOException {
+    initialize();
     return new Iterator<Snapshot>() {
       /** Iterate a copy of the entries to defend against concurrent modification errors. */
       final Iterator<Entry> delegate = new ArrayList<>(lruEntries.values()).iterator();
@@ -707,7 +724,7 @@ public final class DiskLruCache implements Closeable {
 
         synchronized (DiskLruCache.this) {
           // If the cache is closed, truncate the iterator.
-          if (isClosed()) return false;
+          if (closed) return false;
 
           while (delegate.hasNext()) {
             Entry entry = delegate.next();
@@ -774,11 +791,6 @@ public final class DiskLruCache implements Closeable {
       return sources[index];
     }
 
-    /** Returns the string value for {@code index}. */
-    public String getString(int index) throws IOException {
-      return sourceToString(getSource(index));
-    }
-
     /** Returns the byte length of the value for {@code index}. */
     public long getLength(int index) {
       return lengths[index];
@@ -793,7 +805,7 @@ public final class DiskLruCache implements Closeable {
 
   private static final Sink NULL_SINK = new Sink() {
     @Override public void write(Buffer source, long byteCount) throws IOException {
-      // Eat all writes silently. Nom nom.
+      source.skip(byteCount);
     }
 
     @Override public void flush() throws IOException {
@@ -840,15 +852,6 @@ public final class DiskLruCache implements Closeable {
     }
 
     /**
-     * Returns the last committed value as a string, or null if no value
-     * has been committed.
-     */
-    public String getString(int index) throws IOException {
-      Source source = newSource(index);
-      return source != null ? sourceToString(source) : null;
-    }
-
-    /**
      * Returns a new unbuffered output stream to write the value at
      * {@code index}. If the underlying output stream encounters errors
      * when writing to the filesystem, this edit will be aborted when
@@ -879,13 +882,6 @@ public final class DiskLruCache implements Closeable {
         }
         return new FaultHidingSink(sink);
       }
-    }
-
-    /** Sets the value at {@code index} to {@code value}. */
-    public void set(int index, String value) throws IOException {
-      BufferedSink writer = Okio.buffer(newSink(index));
-      writer.writeUtf8(value);
-      writer.close();
     }
 
     /**
@@ -1033,6 +1029,7 @@ public final class DiskLruCache implements Closeable {
       if (!Thread.holdsLock(DiskLruCache.this)) throw new AssertionError();
 
       Source[] sources = new Source[valueCount];
+      long[] lengths = this.lengths.clone(); // Defensive copy since these can be zeroed out.
       try {
         for (int i = 0; i < valueCount; i++) {
           sources[i] = Okio.source(cleanFiles[i]);

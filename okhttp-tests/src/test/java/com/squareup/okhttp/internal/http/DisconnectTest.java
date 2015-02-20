@@ -29,6 +29,7 @@ import java.net.ServerSocket;
 import java.net.Socket;
 import java.util.concurrent.TimeUnit;
 
+import okio.Buffer;
 import org.junit.Before;
 import org.junit.Test;
 
@@ -72,7 +73,7 @@ public final class DisconnectTest {
 
     server.enqueue(new MockResponse()
         .throttleBody(64 * 1024, 125, TimeUnit.MILLISECONDS)); // 500 Kbps
-    server.play();
+    server.start();
 
     HttpURLConnection connection = new OkUrlFactory(client).open(server.getUrl("/"));
     disconnectLater(connection, 500);
@@ -97,9 +98,9 @@ public final class DisconnectTest {
     int responseBodySize = 2 * 1024 * 1024; // 2 MiB
 
     server.enqueue(new MockResponse()
-        .setBody(new byte[responseBodySize])
+        .setBody(new Buffer().write(new byte[responseBodySize]))
         .throttleBody(64 * 1024, 125, TimeUnit.MILLISECONDS)); // 500 Kbps
-    server.play();
+    server.start();
 
     HttpURLConnection connection = new OkUrlFactory(client).open(server.getUrl("/"));
     disconnectLater(connection, 500);

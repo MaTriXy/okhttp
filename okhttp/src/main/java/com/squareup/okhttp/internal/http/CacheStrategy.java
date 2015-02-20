@@ -4,16 +4,22 @@ import com.squareup.okhttp.CacheControl;
 import com.squareup.okhttp.Headers;
 import com.squareup.okhttp.Request;
 import com.squareup.okhttp.Response;
+
 import java.util.Date;
 
 import static com.squareup.okhttp.internal.http.StatusLine.HTTP_PERM_REDIRECT;
 import static com.squareup.okhttp.internal.http.StatusLine.HTTP_TEMP_REDIRECT;
+import static java.net.HttpURLConnection.HTTP_BAD_METHOD;
 import static java.net.HttpURLConnection.HTTP_GONE;
 import static java.net.HttpURLConnection.HTTP_MOVED_PERM;
 import static java.net.HttpURLConnection.HTTP_MOVED_TEMP;
 import static java.net.HttpURLConnection.HTTP_MULT_CHOICE;
 import static java.net.HttpURLConnection.HTTP_NOT_AUTHORITATIVE;
+import static java.net.HttpURLConnection.HTTP_NOT_FOUND;
+import static java.net.HttpURLConnection.HTTP_NOT_IMPLEMENTED;
+import static java.net.HttpURLConnection.HTTP_NO_CONTENT;
 import static java.net.HttpURLConnection.HTTP_OK;
+import static java.net.HttpURLConnection.HTTP_REQ_TOO_LONG;
 import static java.util.concurrent.TimeUnit.SECONDS;
 
 /**
@@ -46,20 +52,27 @@ public final class CacheStrategy {
     switch (response.code()) {
       case HTTP_OK:
       case HTTP_NOT_AUTHORITATIVE:
+      case HTTP_NO_CONTENT:
       case HTTP_MULT_CHOICE:
       case HTTP_MOVED_PERM:
+      case HTTP_NOT_FOUND:
+      case HTTP_BAD_METHOD:
       case HTTP_GONE:
+      case HTTP_REQ_TOO_LONG:
+      case HTTP_NOT_IMPLEMENTED:
       case HTTP_PERM_REDIRECT:
-        // These codes can be cached unless headers forbid it.
-        break;
+      // These codes can be cached unless headers forbid it.
+      break;
 
       case HTTP_MOVED_TEMP:
       case HTTP_TEMP_REDIRECT:
         // These codes can only be cached with the right response headers.
+        // http://tools.ietf.org/html/rfc7234#section-3
+        // s-maxage is not checked because OkHttp is a private cache that should ignore s-maxage.
         if (response.header("Expires") != null
             || response.cacheControl().maxAgeSeconds() != -1
-            || response.cacheControl().sMaxAgeSeconds() != -1
-            || response.cacheControl().isPublic()) {
+            || response.cacheControl().isPublic()
+            || response.cacheControl().isPrivate()) {
           break;
         }
         // Fall-through.
@@ -212,14 +225,12 @@ public final class CacheStrategy {
 
       Request.Builder conditionalRequestBuilder = request.newBuilder();
 
-      if (lastModified != null) {
+      if (etag != null) {
+        conditionalRequestBuilder.header("If-None-Match", etag);
+      } else if (lastModified != null) {
         conditionalRequestBuilder.header("If-Modified-Since", lastModifiedString);
       } else if (servedDate != null) {
         conditionalRequestBuilder.header("If-Modified-Since", servedDateString);
-      }
-
-      if (etag != null) {
-        conditionalRequestBuilder.header("If-None-Match", etag);
       }
 
       Request conditionalRequest = conditionalRequestBuilder.build();

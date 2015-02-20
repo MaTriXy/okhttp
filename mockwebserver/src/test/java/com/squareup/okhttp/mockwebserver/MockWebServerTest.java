@@ -15,9 +15,9 @@
  */
 package com.squareup.okhttp.mockwebserver;
 
+import com.squareup.okhttp.Headers;
 import com.squareup.okhttp.mockwebserver.rule.MockWebServerRule;
 import java.io.BufferedReader;
-import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
 import java.io.InputStreamReader;
@@ -25,14 +25,15 @@ import java.net.HttpURLConnection;
 import java.net.SocketTimeoutException;
 import java.net.URL;
 import java.net.URLConnection;
+import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.List;
 import java.util.concurrent.TimeUnit;
 import org.junit.Rule;
 import org.junit.Test;
 
 import static java.util.concurrent.TimeUnit.NANOSECONDS;
+import static java.util.concurrent.TimeUnit.SECONDS;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
@@ -40,41 +41,16 @@ import static org.junit.Assert.fail;
 public final class MockWebServerTest {
   @Rule public final MockWebServerRule server = new MockWebServerRule();
 
-  @Test public void recordedRequestAccessors() {
-    List<String> headers = Arrays.asList(
-        "User-Agent: okhttp",
-        "Cookie: s=square",
-        "Cookie: a=android",
-        "X-Whitespace:  left",
-        "X-Whitespace:right  ",
-        "X-Whitespace:  both  "
-    );
-    List<Integer> chunkSizes = Collections.emptyList();
-    byte[] body = {'A', 'B', 'C'};
-    String requestLine = "GET / HTTP/1.1";
-    RecordedRequest request = new RecordedRequest(
-        requestLine, headers, chunkSizes, body.length, body, 0, null);
-    assertEquals("s=square", request.getHeader("cookie"));
-    assertEquals(Arrays.asList("s=square", "a=android"), request.getHeaders("cookie"));
-    assertEquals("left", request.getHeader("x-whitespace"));
-    assertEquals(Arrays.asList("left", "right", "both"), request.getHeaders("x-whitespace"));
-    assertEquals("ABC", request.getUtf8Body());
-  }
-
   @Test public void defaultMockResponse() {
     MockResponse response = new MockResponse();
-    assertEquals(Arrays.asList("Content-Length: 0"), response.getHeaders());
+    assertEquals(Arrays.asList("Content-Length: 0"), headersToList(response));
     assertEquals("HTTP/1.1 200 OK", response.getStatus());
   }
 
   @Test public void setBodyAdjustsHeaders() throws IOException {
     MockResponse response = new MockResponse().setBody("ABC");
-    assertEquals(Arrays.asList("Content-Length: 3"), response.getHeaders());
-    InputStream in = response.getBodyStream();
-    assertEquals('A', in.read());
-    assertEquals('B', in.read());
-    assertEquals('C', in.read());
-    assertEquals(-1, in.read());
+    assertEquals(Arrays.asList("Content-Length: 3"), headersToList(response));
+    assertEquals("ABC", response.getBody().readUtf8());
     assertEquals("HTTP/1.1 200 OK", response.getStatus());
   }
 
@@ -83,7 +59,7 @@ public final class MockWebServerTest {
         .clearHeaders()
         .addHeader("Cookie: s=square")
         .addHeader("Cookie", "a=android");
-    assertEquals(Arrays.asList("Cookie: s=square", "Cookie: a=android"), response.getHeaders());
+    assertEquals(Arrays.asList("Cookie: s=square", "Cookie: a=android"), headersToList(response));
   }
 
   @Test public void mockResponseSetHeader() {
@@ -93,62 +69,7 @@ public final class MockWebServerTest {
         .addHeader("Cookie: a=android")
         .addHeader("Cookies: delicious");
     response.setHeader("cookie", "r=robot");
-    assertEquals(Arrays.asList("Cookies: delicious", "cookie: r=robot"), response.getHeaders());
-  }
-
-  /**
-   * Clients who adhere to <a
-   * href="http://www.w3.org/Protocols/rfc2616/rfc2616-sec8.html#sec8.2.3">100
-   * Status</a> expect the server to send an interim response with status code
-   * 100 before they send their payload.
-   *
-   * <h4>Note</h4>
-   *
-   * JRE 6 only passes this test if
-   * {@code -Dsun.net.http.allowRestrictedHeaders=true} is set.
-   */
-  @Test public void expect100ContinueWithBody() throws Exception {
-    server.enqueue(new MockResponse());
-
-    URL url = server.getUrl("/");
-    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-    connection.setRequestMethod("PUT");
-    connection.setAllowUserInteraction(false);
-    connection.setRequestProperty("Expect", "100-continue");
-    connection.setDoOutput(true);
-    connection.getOutputStream().write("hello".getBytes());
-    assertEquals(HttpURLConnection.HTTP_OK, connection.getResponseCode());
-
-    assertEquals(server.getRequestCount(), 1);
-    RecordedRequest request = server.takeRequest();
-    assertEquals(request.getRequestLine(), "PUT / HTTP/1.1");
-    assertEquals("5", request.getHeader("Content-Length"));
-    assertEquals(5, request.getBodySize());
-    assertEquals("hello", new String(request.getBody()));
-    // below fails on JRE 6 unless -Dsun.net.http.allowRestrictedHeaders=true is set
-    assertEquals("100-continue", request.getHeader("Expect"));
-  }
-
-  @Test public void expect100ContinueWithNoBody() throws Exception {
-    server.enqueue(new MockResponse());
-
-    URL url = server.getUrl("/");
-    HttpURLConnection connection = (HttpURLConnection) url.openConnection();
-    connection.setRequestMethod("PUT");
-    connection.setAllowUserInteraction(false);
-    connection.setRequestProperty("Expect", "100-continue");
-    connection.setRequestProperty("Content-Length", "0");
-    connection.setDoOutput(true);
-    connection.setFixedLengthStreamingMode(0);
-    assertEquals(HttpURLConnection.HTTP_OK, connection.getResponseCode());
-
-    assertEquals(server.getRequestCount(), 1);
-    RecordedRequest request = server.takeRequest();
-    assertEquals(request.getRequestLine(), "PUT / HTTP/1.1");
-    assertEquals("0", request.getHeader("Content-Length"));
-    assertEquals(0, request.getBodySize());
-    // below fails on JRE 6 unless -Dsun.net.http.allowRestrictedHeaders=true is set
-    assertEquals("100-continue", request.getHeader("Expect"));
+    assertEquals(Arrays.asList("Cookies: delicious", "cookie: r=robot"), headersToList(response));
   }
 
   @Test public void regularResponse() throws Exception {
@@ -164,7 +85,7 @@ public final class MockWebServerTest {
 
     RecordedRequest request = server.takeRequest();
     assertEquals("GET / HTTP/1.1", request.getRequestLine());
-    assertTrue(request.getHeaders().contains("Accept-Language: en-US"));
+    assertEquals("en-US", request.getHeader("Accept-Language"));
   }
 
   @Test public void redirect() throws Exception {
@@ -262,18 +183,6 @@ public final class MockWebServerTest {
     server.getUrl("/b").openConnection().getInputStream(); // Should succeed.
   }
 
-  @Test public void streamingResponseBody() throws Exception {
-    InputStream responseBody = new ByteArrayInputStream("ABC".getBytes("UTF-8"));
-    server.enqueue(new MockResponse().setBody(responseBody, 3));
-
-    InputStream in = server.getUrl("/").openConnection().getInputStream();
-    assertEquals('A', in.read());
-    assertEquals('B', in.read());
-    assertEquals('C', in.read());
-
-    assertEquals(-1, responseBody.read()); // The body is exhausted.
-  }
-
   /**
    * Throttle the request body by sleeping 500ms after every 3 bytes. With a
    * 6-byte request, this should yield one sleep for a total delay of 500ms.
@@ -322,12 +231,12 @@ public final class MockWebServerTest {
   }
 
   /**
-   * Delay the response body by sleeping 1000ms.
+   * Delay the response body by sleeping 1s.
    */
   @Test public void delayResponse() throws IOException {
     server.enqueue(new MockResponse()
         .setBody("ABCDEF")
-        .setBodyDelayTimeMs(1000));
+        .setBodyDelay(1, SECONDS));
 
     long startNanos = System.nanoTime();
     URLConnection connection = server.getUrl("/").openConnection();
@@ -344,5 +253,15 @@ public final class MockWebServerTest {
 
     assertTrue(String.format("Request + Response: %sms", elapsedMillis), elapsedMillis >= 1000);
     assertTrue(String.format("Request + Response: %sms", elapsedMillis), elapsedMillis <= 1100);
+  }
+
+  private List<String> headersToList(MockResponse response) {
+    Headers headers = response.getHeaders();
+    int size = headers.size();
+    List<String> headerList = new ArrayList<>(size);
+    for (int i = 0; i < size; i++) {
+      headerList.add(headers.name(i) + ": " + headers.value(i));
+    }
+    return headerList;
   }
 }

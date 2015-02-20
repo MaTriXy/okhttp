@@ -21,6 +21,7 @@ import java.io.File;
 import java.io.IOException;
 import java.io.InterruptedIOException;
 import java.io.UnsupportedEncodingException;
+import java.lang.reflect.Array;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.URI;
@@ -44,9 +45,6 @@ import okio.Source;
 public final class Util {
   public static final byte[] EMPTY_BYTE_ARRAY = new byte[0];
   public static final String[] EMPTY_STRING_ARRAY = new String[0];
-
-  /** A cheap and type-safe constant for the US-ASCII Charset. */
-  public static final Charset US_ASCII = Charset.forName("US-ASCII");
 
   /** A cheap and type-safe constant for the UTF-8 Charset. */
   public static final Charset UTF_8 = Charset.forName("UTF-8");
@@ -269,10 +267,20 @@ public final class Util {
   }
 
   /**
-   * Returns a mutable copy of {@code first} containing only elements also in {@code second}. The
-   * returned elements are in the same order as in {@code first}.
+   * Returns an array containing containing only elements found in {@code first}  and also in
+   * {@code second}. The returned elements are in the same order as in {@code first}.
    */
-  public static <T> List<T> intersect(T[] first, T[] second) {
+  @SuppressWarnings("unchecked")
+  public static <T> T[] intersect(Class<T> arrayType, T[] first, T[] second) {
+    List<T> result = intersect(first, second);
+    return result.toArray((T[]) Array.newInstance(arrayType, result.size()));
+  }
+
+  /**
+   * Returns a list containing containing only elements found in {@code first}  and also in
+   * {@code second}. The returned elements are in the same order as in {@code first}.
+   */
+  private static <T> List<T> intersect(T[] first, T[] second) {
     List<T> result = new ArrayList<>();
     for (T a : first) {
       for (T b : second) {

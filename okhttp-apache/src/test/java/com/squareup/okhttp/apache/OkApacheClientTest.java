@@ -6,7 +6,6 @@ import com.squareup.okhttp.mockwebserver.RecordedRequest;
 import java.io.ByteArrayInputStream;
 import java.io.IOException;
 import java.io.InputStream;
-import java.util.Arrays;
 import java.util.zip.GZIPInputStream;
 import okio.Buffer;
 import okio.GzipSink;
@@ -28,7 +27,6 @@ import static com.squareup.okhttp.internal.Util.UTF_8;
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.assertNotNull;
 import static org.junit.Assert.assertNull;
-import static org.junit.Assert.assertTrue;
 
 public class OkApacheClientTest {
   private MockWebServer server;
@@ -37,7 +35,7 @@ public class OkApacheClientTest {
   @Before public void setUp() throws IOException {
     client = new OkApacheClient();
     server = new MockWebServer();
-    server.play();
+    server.start();
   }
 
   @After public void tearDown() throws IOException {
@@ -98,7 +96,7 @@ public class OkApacheClientTest {
     client.execute(post);
 
     RecordedRequest request = server.takeRequest();
-    assertTrue(Arrays.equals(body, request.getBody()));
+    assertEquals("Hello, world!", request.getBody().readUtf8());
     assertEquals(request.getHeader("Content-Length"), "13");
   }
 
@@ -111,7 +109,7 @@ public class OkApacheClientTest {
     client.execute(post);
 
     RecordedRequest request = server.takeRequest();
-    assertTrue(Arrays.equals(body, request.getBody()));
+    assertEquals("Hello, world!", request.getBody().readUtf8());
     assertEquals(request.getHeader("Content-Length"), "13");
   }
 

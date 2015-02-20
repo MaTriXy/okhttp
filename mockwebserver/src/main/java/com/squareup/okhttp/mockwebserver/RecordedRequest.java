@@ -16,28 +16,27 @@
 
 package com.squareup.okhttp.mockwebserver;
 
+import com.squareup.okhttp.Headers;
 import com.squareup.okhttp.TlsVersion;
-import com.squareup.okhttp.internal.Internal;
-import java.io.UnsupportedEncodingException;
 import java.net.Socket;
-import java.util.ArrayList;
 import java.util.List;
 import javax.net.ssl.SSLSocket;
+import okio.Buffer;
 
 /** An HTTP request that came into the mock web server. */
 public final class RecordedRequest {
   private final String requestLine;
   private final String method;
   private final String path;
-  private final List<String> headers;
+  private final Headers headers;
   private final List<Integer> chunkSizes;
   private final long bodySize;
-  private final byte[] body;
+  private final Buffer body;
   private final int sequenceNumber;
   private final TlsVersion tlsVersion;
 
-  public RecordedRequest(String requestLine, List<String> headers, List<Integer> chunkSizes,
-      long bodySize, byte[] body, int sequenceNumber, Socket socket) {
+  public RecordedRequest(String requestLine, Headers headers, List<Integer> chunkSizes,
+      long bodySize, Buffer body, int sequenceNumber, Socket socket) {
     this.requestLine = requestLine;
     this.headers = headers;
     this.chunkSizes = chunkSizes;
@@ -45,7 +44,7 @@ public final class RecordedRequest {
     this.body = body;
     this.sequenceNumber = sequenceNumber;
     this.tlsVersion = socket instanceof SSLSocket
-        ? Internal.instance.tlsVersionForJavaName(((SSLSocket) socket).getSession().getProtocol())
+        ? TlsVersion.forJavaName(((SSLSocket) socket).getSession().getProtocol())
         : null;
 
     if (requestLine != null) {
@@ -72,36 +71,14 @@ public final class RecordedRequest {
   }
 
   /** Returns all headers. */
-  public List<String> getHeaders() {
+  public Headers getHeaders() {
     return headers;
   }
 
-  /**
-   * Returns the first header named {@code name}, or null if no such header
-   * exists.
-   */
+  /** Returns the first header named {@code name}, or null if no such header exists. */
   public String getHeader(String name) {
-    name += ":";
-    for (int i = 0, size = headers.size(); i < size; i++) {
-      String header = headers.get(i);
-      if (name.regionMatches(true, 0, header, 0, name.length())) {
-        return header.substring(name.length()).trim();
-      }
-    }
-    return null;
-  }
-
-  /** Returns the headers named {@code name}. */
-  public List<String> getHeaders(String name) {
-    List<String> result = new ArrayList<>();
-    name += ":";
-    for (int i = 0, size = headers.size(); i < size; i++) {
-      String header = headers.get(i);
-      if (name.regionMatches(true, 0, header, 0, name.length())) {
-        result.add(header.substring(name.length()).trim());
-      }
-    }
-    return result;
+    List<String> values = headers.values(name);
+    return values.isEmpty() ? null : values.get(0);
   }
 
   /**
@@ -121,17 +98,13 @@ public final class RecordedRequest {
   }
 
   /** Returns the body of this POST request. This may be truncated. */
-  public byte[] getBody() {
+  public Buffer getBody() {
     return body;
   }
 
-  /** Returns the body of this POST request decoded as a UTF-8 string. */
+  /** @deprecated Use {@link #getBody() getBody().readUtf8()}. */
   public String getUtf8Body() {
-    try {
-      return new String(body, "UTF-8");
-    } catch (UnsupportedEncodingException e) {
-      throw new AssertionError();
-    }
+    return getBody().readUtf8();
   }
 
   /**
@@ -141,11 +114,6 @@ public final class RecordedRequest {
    */
   public int getSequenceNumber() {
     return sequenceNumber;
-  }
-
-  /** @deprecated Use {@link #getTlsVersion()}. */
-  public String getSslProtocol() {
-    return tlsVersion != null ? tlsVersion.name() : null;
   }
 
   /** Returns the connection's TLS version or null if the connection doesn't use SSL. */
