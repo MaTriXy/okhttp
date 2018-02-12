@@ -18,6 +18,8 @@ package okhttp3.internal.tls;
 import java.io.IOException;
 import java.net.SocketException;
 import java.security.GeneralSecurityException;
+import java.security.NoSuchAlgorithmException;
+import javax.net.ssl.SSLContext;
 import javax.net.ssl.SSLHandshakeException;
 import javax.net.ssl.SSLPeerUnverifiedException;
 import javax.net.ssl.SSLSocket;
@@ -30,12 +32,16 @@ import okhttp3.Request;
 import okhttp3.Response;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
+import okhttp3.mockwebserver.internal.tls.HeldCertificate;
+import okhttp3.mockwebserver.internal.tls.SslClient;
 import org.junit.Before;
 import org.junit.Rule;
 import org.junit.Test;
 
 import static okhttp3.TestUtil.defaultClient;
+import static okhttp3.internal.platform.PlatformTest.getPlatform;
 import static org.junit.Assert.assertEquals;
+import static org.junit.Assert.assertTrue;
 import static org.junit.Assert.fail;
 
 public final class ClientAuthTest {
@@ -172,6 +178,7 @@ public final class ClientAuthTest {
     } catch (SSLHandshakeException expected) {
     } catch (SocketException expected) {
       // JDK 9
+      assertTrue(getPlatform().equals("jdk9"));
     }
   }
 
@@ -218,6 +225,7 @@ public final class ClientAuthTest {
     } catch (SSLHandshakeException expected) {
     } catch (SocketException expected) {
       // JDK 9
+      assertTrue(getPlatform().equals("jdk9"));
     }
   }
 
@@ -236,10 +244,13 @@ public final class ClientAuthTest {
   }
 
   public SSLSocketFactory buildServerSslSocketFactory(final ClientAuth clientAuth) {
+    // The test uses JDK default SSL Context instead of the Platform provided one
+    // as Conscrypt seems to have some differences, we only want to test client side here.
     SslClient serverSslClient = new SslClient.Builder()
         .addTrustedCertificate(serverRootCa.certificate)
         .addTrustedCertificate(clientRootCa.certificate)
         .certificateChain(serverCert, serverIntermediateCa)
+        .sslContext(getSslContext())
         .build();
 
     return new DelegatingSSLSocketFactory(serverSslClient.socketFactory) {
@@ -253,5 +264,13 @@ public final class ClientAuthTest {
         return super.configureSocket(sslSocket);
       }
     };
+  }
+
+  private SSLContext getSslContext() {
+    try {
+      return SSLContext.getInstance("TLS");
+    } catch (NoSuchAlgorithmException e) {
+      throw new IllegalStateException("unable to build JDK default SSLContext");
+    }
   }
 }

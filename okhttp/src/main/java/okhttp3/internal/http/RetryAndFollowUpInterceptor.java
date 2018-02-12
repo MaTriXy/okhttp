@@ -29,7 +29,6 @@ import javax.net.ssl.SSLSocketFactory;
 import okhttp3.Address;
 import okhttp3.Call;
 import okhttp3.CertificatePinner;
-import okhttp3.Connection;
 import okhttp3.EventListener;
 import okhttp3.HttpUrl;
 import okhttp3.Interceptor;
@@ -67,7 +66,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
 
   private final OkHttpClient client;
   private final boolean forWebSocket;
-  private StreamAllocation streamAllocation;
+  private volatile StreamAllocation streamAllocation;
   private Object callStackTrace;
   private volatile boolean canceled;
 
@@ -109,8 +108,9 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
     Call call = realChain.call();
     EventListener eventListener = realChain.eventListener();
 
-    streamAllocation = new StreamAllocation(client.connectionPool(), createAddress(request.url()),
-        call, eventListener, callStackTrace);
+    StreamAllocation streamAllocation = new StreamAllocation(client.connectionPool(),
+        createAddress(request.url()), call, eventListener, callStackTrace);
+    this.streamAllocation = streamAllocation;
 
     int followUpCount = 0;
     Response priorResponse = null;
@@ -127,7 +127,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         releaseConnection = false;
       } catch (RouteException e) {
         // The attempt to connect via a route failed. The request will not have been sent.
-        if (!recover(e.getLastConnectException(), false, request)) {
+        if (!recover(e.getLastConnectException(), streamAllocation, false, request)) {
           throw e.getLastConnectException();
         }
         releaseConnection = false;
@@ -135,7 +135,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
       } catch (IOException e) {
         // An attempt to communicate with a server failed. The request may have been sent.
         boolean requestSendStarted = !(e instanceof ConnectionShutdownException);
-        if (!recover(e, requestSendStarted, request)) throw e;
+        if (!recover(e, streamAllocation, requestSendStarted, request)) throw e;
         releaseConnection = false;
         continue;
       } finally {
@@ -155,7 +155,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
             .build();
       }
 
-      Request followUp = followUpRequest(response);
+      Request followUp = followUpRequest(response, streamAllocation.route());
 
       if (followUp == null) {
         if (!forWebSocket) {
@@ -180,6 +180,7 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
         streamAllocation.release();
         streamAllocation = new StreamAllocation(client.connectionPool(),
             createAddress(followUp.url()), call, eventListener, callStackTrace);
+        this.streamAllocation = streamAllocation;
       } else if (streamAllocation.codec() != null) {
         throw new IllegalStateException("Closing the body of " + response
             + " didn't close its backing stream. Bad interceptor?");
@@ -211,7 +212,8 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
    * be recovered if the body is buffered or if the failure occurred before the request has been
    * sent.
    */
-  private boolean recover(IOException e, boolean requestSendStarted, Request userRequest) {
+  private boolean recover(IOException e, StreamAllocation streamAllocation,
+      boolean requestSendStarted, Request userRequest) {
     streamAllocation.streamFailed(e);
 
     // The application layer has forbidden retries.
@@ -267,12 +269,8 @@ public final class RetryAndFollowUpInterceptor implements Interceptor {
    * either add authentication headers, follow redirects or handle a client request timeout. If a
    * follow-up is either unnecessary or not applicable, this returns null.
    */
-  private Request followUpRequest(Response userResponse) throws IOException {
+  private Request followUpRequest(Response userResponse, Route route) throws IOException {
     if (userResponse == null) throw new IllegalStateException();
-    Connection connection = streamAllocation.connection();
-    Route route = connection != null
-        ? connection.route()
-        : null;
     int responseCode = userResponse.code();
 
     final String method = userResponse.request().method();

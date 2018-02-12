@@ -31,6 +31,7 @@ import java.net.ProxySelector;
 import java.net.ServerSocket;
 import java.net.Socket;
 import java.net.SocketAddress;
+import java.net.SocketException;
 import java.net.SocketTimeoutException;
 import java.net.URI;
 import java.net.URL;
@@ -70,11 +71,12 @@ import okhttp3.internal.SingleInetAddressDns;
 import okhttp3.internal.Util;
 import okhttp3.internal.Version;
 import okhttp3.internal.huc.OkHttpURLConnection;
-import okhttp3.internal.tls.SslClient;
+import okhttp3.internal.platform.Platform;
 import okhttp3.mockwebserver.MockResponse;
 import okhttp3.mockwebserver.MockWebServer;
 import okhttp3.mockwebserver.RecordedRequest;
 import okhttp3.mockwebserver.SocketPolicy;
+import okhttp3.mockwebserver.internal.tls.SslClient;
 import okio.Buffer;
 import okio.BufferedSink;
 import okio.GzipSink;
@@ -659,7 +661,7 @@ public final class URLConnectionTest {
     HttpURLConnection connection1 = urlFactory.open(server.url("/").url());
     assertContent("this response comes via HTTPS", connection1);
 
-    SSLContext sslContext2 = SSLContext.getInstance("TLS");
+    SSLContext sslContext2 = Platform.get().getSSLContext();
     sslContext2.init(null, null, null);
     SSLSocketFactory sslSocketFactory2 = sslContext2.getSocketFactory();
 
@@ -2423,7 +2425,7 @@ public final class URLConnectionTest {
   @Test public void httpsWithCustomTrustManager() throws Exception {
     RecordingHostnameVerifier hostnameVerifier = new RecordingHostnameVerifier();
     RecordingTrustManager trustManager = new RecordingTrustManager(sslClient.trustManager);
-    SSLContext sslContext = SSLContext.getInstance("TLS");
+    SSLContext sslContext = Platform.get().getSSLContext();
     sslContext.init(null, new TrustManager[] { trustManager }, null);
 
     urlFactory.setClient(urlFactory.client().newBuilder()
@@ -3172,7 +3174,7 @@ public final class URLConnectionTest {
     assertNull(server.takeRequest().getHeader("Authorization"));
     assertEquals(credential, server.takeRequest().getHeader("Authorization"));
 
-    assertEquals(Proxy.NO_PROXY, authenticator.onlyProxy());
+    assertEquals(Proxy.NO_PROXY, authenticator.onlyRoute().proxy());
     Response response = authenticator.onlyResponse();
     assertEquals("/private", response.request().url().url().getPath());
     assertEquals(Arrays.asList(new Challenge("Basic", "protected area")), response.challenges());
@@ -3395,6 +3397,8 @@ public final class URLConnectionTest {
       // RI response to the FAIL_HANDSHAKE
     } catch (SSLHandshakeException expected) {
       // Android's response to the FAIL_HANDSHAKE
+    } catch (SocketException expected) {
+      // Conscrypt's response to the FAIL_HANDSHAKE
     }
   }
 
@@ -3668,6 +3672,20 @@ public final class URLConnectionTest {
     RecordedRequest request2 = server.takeRequest();
     assertEquals("123", request2.getBody().readUtf8());
     assertEquals(0, request2.getSequenceNumber());
+  }
+
+  @Test public void authenticateNoConnection() throws Exception {
+    server.enqueue(new MockResponse()
+        .addHeader("Connection: close")
+        .setResponseCode(401)
+        .setSocketPolicy(SocketPolicy.DISCONNECT_AT_END));
+
+    Authenticator.setDefault(new RecordingAuthenticator(null));
+    urlFactory.setClient(urlFactory.client().newBuilder()
+        .authenticator(new JavaNetAuthenticator())
+        .build());
+    connection = urlFactory.open(server.url("/").url());
+    assertEquals(401, connection.getResponseCode());
   }
 
   private void testInstanceFollowsRedirects(String spec) throws Exception {
