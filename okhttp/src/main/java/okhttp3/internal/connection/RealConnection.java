@@ -19,6 +19,7 @@ package okhttp3.internal.connection;
 import java.io.IOException;
 import java.lang.ref.Reference;
 import java.net.ConnectException;
+import java.net.HttpURLConnection;
 import java.net.ProtocolException;
 import java.net.Proxy;
 import java.net.Socket;
@@ -128,7 +129,8 @@ public final class RealConnection extends Http2Connection.Listener implements Co
   }
 
   public void connect(int connectTimeout, int readTimeout, int writeTimeout,
-      boolean connectionRetryEnabled, Call call, EventListener eventListener) {
+      int pingIntervalMillis, boolean connectionRetryEnabled, Call call,
+      EventListener eventListener) {
     if (protocol != null) throw new IllegalStateException("already connected");
 
     RouteException routeException = null;
@@ -145,6 +147,11 @@ public final class RealConnection extends Http2Connection.Listener implements Co
         throw new RouteException(new UnknownServiceException(
             "CLEARTEXT communication to " + host + " not permitted by network security policy"));
       }
+    } else {
+      if (route.address().protocols().contains(Protocol.H2_PRIOR_KNOWLEDGE)) {
+        throw new RouteException(new UnknownServiceException(
+            "H2_PRIOR_KNOWLEDGE cannot be used with HTTPS"));
+      }
     }
 
     while (true) {
@@ -158,7 +165,7 @@ public final class RealConnection extends Http2Connection.Listener implements Co
         } else {
           connectSocket(connectTimeout, readTimeout, call, eventListener);
         }
-        establishProtocol(connectionSpecSelector, call, eventListener);
+        establishProtocol(connectionSpecSelector, pingIntervalMillis, call, eventListener);
         eventListener.connectEnd(call, route.socketAddress(), route.proxy(), protocol);
         break;
       } catch (IOException e) {
@@ -257,11 +264,18 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     }
   }
 
-  private void establishProtocol(ConnectionSpecSelector connectionSpecSelector, Call call,
-      EventListener eventListener) throws IOException {
+  private void establishProtocol(ConnectionSpecSelector connectionSpecSelector,
+      int pingIntervalMillis, Call call, EventListener eventListener) throws IOException {
     if (route.address().sslSocketFactory() == null) {
-      protocol = Protocol.HTTP_1_1;
+      if (route.address().protocols().contains(Protocol.H2_PRIOR_KNOWLEDGE)) {
+        socket = rawSocket;
+        protocol = Protocol.H2_PRIOR_KNOWLEDGE;
+        startHttp2(pingIntervalMillis);
+        return;
+      }
+
       socket = rawSocket;
+      protocol = Protocol.HTTP_1_1;
       return;
     }
 
@@ -270,13 +284,18 @@ public final class RealConnection extends Http2Connection.Listener implements Co
     eventListener.secureConnectEnd(call, handshake);
 
     if (protocol == Protocol.HTTP_2) {
-      socket.setSoTimeout(0); // HTTP/2 connection timeouts are set per-stream.
-      http2Connection = new Http2Connection.Builder(true)
-          .socket(socket, route.address().url().host(), source, sink)
-          .listener(this)
-          .build();
-      http2Connection.start();
+      startHttp2(pingIntervalMillis);
     }
+  }
+
+  private void startHttp2(int pingIntervalMillis) throws IOException {
+    socket.setSoTimeout(0); // HTTP/2 connection timeouts are set per-stream.
+    http2Connection = new Http2Connection.Builder(true)
+        .socket(socket, route.address().url().host(), source, sink)
+        .listener(this)
+        .pingIntervalMillis(pingIntervalMillis)
+        .build();
+    http2Connection.start();
   }
 
   private void connectTls(ConnectionSpecSelector connectionSpecSelector) throws IOException {
@@ -300,13 +319,10 @@ public final class RealConnection extends Http2Connection.Listener implements Co
       sslSocket.startHandshake();
       // block for session establishment
       SSLSession sslSocketSession = sslSocket.getSession();
-      if (!isValid(sslSocketSession)) {
-        throw new IOException("a valid ssl session was not established");
-      }
       Handshake unverifiedHandshake = Handshake.get(sslSocketSession);
 
       // Verify that the socket's certificates are acceptable for the target host.
-      if (!address.hostnameVerifier().verify(address.url().host(), sslSocket.getSession())) {
+      if (!address.hostnameVerifier().verify(address.url().host(), sslSocketSession)) {
         X509Certificate cert = (X509Certificate) unverifiedHandshake.peerCertificates().get(0);
         throw new SSLPeerUnverifiedException("Hostname " + address.url().host() + " not verified:"
             + "\n    certificate: " + CertificatePinner.pin(cert)
@@ -341,12 +357,6 @@ public final class RealConnection extends Http2Connection.Listener implements Co
         closeQuietly(sslSocket);
       }
     }
-  }
-
-  private boolean isValid(SSLSession sslSocketSession) {
-    // don't use SslSocket.getSession since for failed results it returns SSL_NULL_WITH_NULL_NULL
-    return !"NONE".equals(sslSocketSession.getProtocol()) && !"SSL_NULL_WITH_NULL_NULL".equals(
-        sslSocketSession.getCipherSuite());
   }
 
   /**
@@ -407,14 +417,37 @@ public final class RealConnection extends Http2Connection.Listener implements Co
    * Returns a request that creates a TLS tunnel via an HTTP proxy. Everything in the tunnel request
    * is sent unencrypted to the proxy server, so tunnels include only the minimum set of headers.
    * This avoids sending potentially sensitive data like HTTP cookies to the proxy unencrypted.
+   *
+   * <p>In order to support preemptive authentication we pass a fake “Auth Failed” response to the
+   * authenticator. This gives the authenticator the option to customize the CONNECT request. It can
+   * decline to do so by returning null, in which case OkHttp will use it as-is
    */
-  private Request createTunnelRequest() {
-    return new Request.Builder()
+  private Request createTunnelRequest() throws IOException {
+    Request proxyConnectRequest = new Request.Builder()
         .url(route.address().url())
+        .method("CONNECT", null)
         .header("Host", Util.hostHeader(route.address().url(), true))
         .header("Proxy-Connection", "Keep-Alive") // For HTTP/1.0 proxies like Squid.
         .header("User-Agent", Version.userAgent())
         .build();
+
+    Response fakeAuthChallengeResponse = new Response.Builder()
+        .request(proxyConnectRequest)
+        .protocol(Protocol.HTTP_1_1)
+        .code(HttpURLConnection.HTTP_PROXY_AUTH)
+        .message("Preemptive Authenticate")
+        .body(Util.EMPTY_RESPONSE)
+        .sentRequestAtMillis(-1L)
+        .receivedResponseAtMillis(-1L)
+        .header("Proxy-Authenticate", "OkHttp-Preemptive")
+        .build();
+
+    Request authenticatedRequest = route.address().proxyAuthenticator()
+        .authenticate(route, fakeAuthChallengeResponse);
+
+    return authenticatedRequest != null
+        ? authenticatedRequest
+        : proxyConnectRequest;
   }
 
   /**

@@ -6,17 +6,10 @@ An HTTP & HTTP/2 client for Android and Java applications. For more information 
 Download
 --------
 
-Download [the latest JAR][3] or grab via Maven:
-```xml
-<dependency>
-  <groupId>com.squareup.okhttp3</groupId>
-  <artifactId>okhttp</artifactId>
-  <version>3.9.1</version>
-</dependency>
-```
-or Gradle:
-```groovy
-implementation 'com.squareup.okhttp3:okhttp:3.9.1'
+Download [the latest JAR][3] or configure this dependency:
+
+```kotlin
+implementation("com.squareup.okhttp3:okhttp:3.12.0")
 ```
 
 Snapshots of the development version are available in [Sonatype's `snapshots` repository][snap].
@@ -31,32 +24,19 @@ MockWebServer coupling with OkHttp is essential for proper testing of HTTP/2 so 
 
 ### Download
 
-Download [the latest JAR][4] or grab via Maven:
+Download [the latest JAR][4] or configure this dependency:
 ```xml
-<dependency>
-  <groupId>com.squareup.okhttp3</groupId>
-  <artifactId>mockwebserver</artifactId>
-  <version>3.9.1</version>
-  <scope>test</scope>
-</dependency>
-```
-or Gradle:
-```groovy
-testImplementation 'com.squareup.okhttp3:mockwebserver:3.9.1'
+testImplementation("com.squareup.okhttp3:mockwebserver:3.12.0")
 ```
 
-ProGuard
---------
+R8 / ProGuard
+-------------
 
-If you are using ProGuard you might need to add the following options:
+If you are using R8 or ProGuard add the options from
+[this file](https://github.com/square/okhttp/blob/master/okhttp/src/main/resources/META-INF/proguard/okhttp3.pro).
 
-```
--dontwarn okhttp3.**
--dontwarn okio.**
--dontwarn javax.annotation.**
-# A resource is loaded with a relative path so the package of this class must be preserved.
--keepnames class okhttp3.internal.publicsuffix.PublicSuffixDatabase
-```
+You might also need rules for Okio which is a dependency of this library.
+
 
 License
 -------
@@ -74,7 +54,7 @@ License
     limitations under the License.
 
 
- [1]: http://square.github.io/okhttp
+ [1]: https://square.github.io/okhttp
  [2]: https://github.com/square/okhttp/wiki
  [3]: https://search.maven.org/remote_content?g=com.squareup.okhttp3&a=okhttp&v=LATEST
  [4]: https://search.maven.org/remote_content?g=com.squareup.okhttp3&a=mockwebserver&v=LATEST
