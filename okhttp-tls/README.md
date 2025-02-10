@@ -8,9 +8,8 @@ A [`HeldCertificate`][held_certificate] is a certificate and its private key. Us
 for HTTPS:
 
 ```java
-String localhost = InetAddress.getByName("localhost").getCanonicalHostName();
 HeldCertificate localhostCertificate = new HeldCertificate.Builder()
-    .addSubjectAlternativeName(localhost)
+    .addSubjectAlternativeName("localhost")
     .build();
 ```
 
@@ -62,9 +61,8 @@ HeldCertificate intermediateCertificate = new HeldCertificate.Builder()
     .signedBy(rootCertificate)
     .build();
 
-String localhost = InetAddress.getByName("localhost").getCanonicalHostName();
 HeldCertificate serverCertificate = new HeldCertificate.Builder()
-    .addSubjectAlternativeName(localhost)
+    .addSubjectAlternativeName("localhost")
     .signedBy(intermediateCertificate)
     .build();
 ```
@@ -226,21 +224,11 @@ clients use `HeldCertificate.Builder.rsa2048()`.
 Download
 --------
 
-Get via Maven:
-```xml
-<dependency>
-  <groupId>com.squareup.okhttp3</groupId>
-  <artifactId>okhttp-tls</artifactId>
-  <version>(insert latest version)</version>
-</dependency>
+```kotlin
+implementation("com.squareup.okhttp3:okhttp-tls:4.12.0")
 ```
 
-or via Gradle
-```groovy
-implementation 'com.squareup.okhttp3:okhttp-tls:(insert latest version)'
-```
-
- [held_certificate]: http://square.github.io/okhttp/3.x/okhttp-tls/okhttp3/tls/HeldCertificate.html
- [held_certificate_builder]: http://square.github.io/okhttp/3.x/okhttp-tls/okhttp3/tls/HeldCertificate.Builder.html
- [handshake_certificates]: http://square.github.io/okhttp/3.x/okhttp-tls/okhttp3/tls/HandshakeCertificates.html
- [handshake_certificates_builder]: http://square.github.io/okhttp/3.x/okhttp-tls/okhttp3/tls/HandshakeCertificates.Builder.html
+ [held_certificate]: https://square.github.io/okhttp/4.x/okhttp-tls/okhttp3.tls/-held-certificate/
+ [held_certificate_builder]: https://square.github.io/okhttp/4.x/okhttp-tls/okhttp3.tls/-held-certificate/-builder/
+ [handshake_certificates]: https://square.github.io/okhttp/4.x/okhttp-tls/okhttp3.tls/-handshake-certificates/
+ [handshake_certificates_builder]: https://square.github.io/okhttp/4.x/okhttp-tls/okhttp3.tls/-handshake-certificates/-builder/

@@ -1,5 +1,9 @@
 #!/bin/bash
 
+# The website is built using MkDocs with the Material theme.
+# https://squidfunk.github.io/mkdocs-material/
+# It requires python3 to run.
+
 set -ex
 
 REPO="git@github.com:square/okhttp.git"
@@ -10,26 +14,34 @@ rm -rf $DIR
 
 # Clone the current repo into temp folder
 git clone $REPO $DIR
+# Replace `git clone` with these lines to hack on the website locally
+# cp -a . "../okhttp-website"
+# mv "../okhttp-website" "$DIR"
 
 # Move working directory into temp folder
 cd $DIR
 
-# Checkout and track the gh-pages branch
-git checkout -t origin/gh-pages
+# Generate the API docs
+./gradlew dokkaHtmlMultiModule
 
-# Delete everything that isn't versioned (1.x, 2.x)
-ls | grep -E -v '^\d+\.x$' | xargs rm -rf
+mv ./build/dokka/htmlMultiModule docs/5.x
 
-# Copy website files from real repo
-cp -R ../website/* .
+# Copy in special files that GitHub wants in the project root.
+cat README.md | grep -v 'project website' > docs/index.md
+cp CHANGELOG.md docs/changelogs/changelog.md
+cp CONTRIBUTING.md docs/contribute/contributing.md
 
-# Stage all files in git and create a commit
-git add .
-git add -u
-git commit -m "Website at $(date)"
+# Build the site and push the new files up to GitHub
+python3 -m venv venv
+source venv/bin/activate
+pip install mkdocs-material mkdocs-redirects
+mkdocs gh-deploy
 
-# Push the new files up to GitHub
-git push origin gh-pages
+# Restore Javadocs from 1.x, 2.x, and 3.x.
+git checkout gh-pages
+git cherry-pick bb229b9dcc9a21a73edbf8d936bea88f52e0a3ff
+git cherry-pick c695732f1d4aea103b826876c077fbfea630e244
+git push --set-upstream origin gh-pages
 
 # Delete our temp folder
 cd ..
